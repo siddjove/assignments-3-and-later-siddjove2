@@ -1,31 +1,28 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <unistd.h>
 #include <errno.h>
+#include <string.h>
 #include <signal.h>
-#include <pthread.h>
 #include <fcntl.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <sys/stat.h>
 #include <syslog.h>
+#include <pthread.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
 
 #define PORT 9000
 #define DATA_FILE "/var/tmp/aesdsocketdata"
-#define BACKLOG 10
-#define BUF_SIZE 1024
+#define MAX_PACKET_SIZE 1024
 
 static volatile sig_atomic_t keepRunning = 1;
-static pthread_mutex_t file_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 struct clientInfo {
     int clientFD;
     struct sockaddr_in clientAddr;
 };
 
-static void signal_handler(int signo)
+void signal_handler(int signo)
 {
     (void)signo;
     keepRunning = 0;
@@ -34,43 +31,36 @@ static void signal_handler(int signo)
 void *processClientData(void *arg)
 {
     struct clientInfo *client = (struct clientInfo *)arg;
-    char buffer[BUF_SIZE];
-    char packet[BUF_SIZE];
-    int packet_len = 0;
+    char buffer[MAX_PACKET_SIZE];
+    ssize_t bytes;
 
-    syslog(LOG_INFO, "Accepted connection from %s",
-           inet_ntoa(client->clientAddr.sin_addr));
+    int fd = open(DATA_FILE, O_CREAT | O_RDWR | O_APPEND, 0644);
+    if (fd < 0) {
+        syslog(LOG_ERR, "File open failed");
+        close(client->clientFD);
+        free(client);
+        return NULL;
+    }
 
-    while (keepRunning) {
-        ssize_t bytes = recv(client->clientFD, buffer, sizeof(buffer), 0);
-        if (bytes <= 0) {
-            break;
-        }
+    while ((bytes = recv(client->clientFD, buffer, sizeof(buffer), 0)) > 0) {
 
-        for (ssize_t i = 0; i < bytes; i++) {
-            packet[packet_len++] = buffer[i];
+        write(fd, buffer, bytes);
 
-            if (buffer[i] == '\n') {
-                pthread_mutex_lock(&file_mutex);
+        if (memchr(buffer, '\n', bytes)) {
+            lseek(fd, 0, SEEK_SET);
 
-                int fd = open(DATA_FILE, O_CREAT | O_RDWR | O_APPEND, 0644);
-                write(fd, packet, packet_len);
-                lseek(fd, 0, SEEK_SET);
-
-                char sendbuf[BUF_SIZE];
-                ssize_t r;
-                while ((r = read(fd, sendbuf, sizeof(sendbuf))) > 0) {
-                    send(client->clientFD, sendbuf, r, 0);
-                }
-
-                close(fd);
-                pthread_mutex_unlock(&file_mutex);
-
-                packet_len = 0;
+            char sendbuf[MAX_PACKET_SIZE];
+            ssize_t read_bytes;
+            while ((read_bytes = read(fd, sendbuf, sizeof(sendbuf))) > 0) {
+                send(client->clientFD, sendbuf, read_bytes, 0);
             }
         }
     }
 
+    syslog(LOG_INFO, "Closed connection from %s",
+           inet_ntoa(client->clientAddr.sin_addr));
+
+    close(fd);
     close(client->clientFD);
     free(client);
     return NULL;
@@ -85,51 +75,73 @@ int main(int argc, char *argv[])
         if (opt == 'd') daemonize = 1;
     }
 
-    openlog("aesdsocket", LOG_PID, LOG_USER);
+    openlog("aesdsocket", LOG_PID | LOG_CONS, LOG_USER);
 
-    struct sigaction sa = {0};
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
     sa.sa_handler = signal_handler;
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
 
     int sockFD = socket(AF_INET, SOCK_STREAM, 0);
-    int optval = 1;
-    setsockopt(sockFD, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
+    if (sockFD < 0) {
+        syslog(LOG_ERR, "Socket creation failed");
+        return -1;
+    }
 
-    struct sockaddr_in serverAddr = {0};
+    int reuse = 1;
+    setsockopt(sockFD, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+
+    struct sockaddr_in serverAddr;
+    memset(&serverAddr, 0, sizeof(serverAddr));
     serverAddr.sin_family = AF_INET;
     serverAddr.sin_port = htons(PORT);
     serverAddr.sin_addr.s_addr = INADDR_ANY;
 
-    bind(sockFD, (struct sockaddr *)&serverAddr, sizeof(serverAddr));
-    listen(sockFD, BACKLOG);
+    if (bind(sockFD, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0) {
+        syslog(LOG_ERR, "Bind failed");
+        close(sockFD);
+        return -1;
+    }
+
+    if (listen(sockFD, 10) < 0) {
+        syslog(LOG_ERR, "Listen failed");
+        close(sockFD);
+        return -1;
+    }
 
     if (daemonize) {
         pid_t pid = fork();
-        if (pid > 0) exit(0);
+        if (pid < 0) exit(EXIT_FAILURE);
+        if (pid > 0) exit(EXIT_SUCCESS);
+
         setsid();
         chdir("/");
+        umask(0);
+
         close(STDIN_FILENO);
         close(STDOUT_FILENO);
         close(STDERR_FILENO);
-        open("/dev/null", O_RDWR);
-        dup(0);
-        dup(0);
     }
 
     remove(DATA_FILE);
 
     while (keepRunning) {
-        struct clientInfo *client = malloc(sizeof(*client));
-        socklen_t len = sizeof(client->clientAddr);
+        struct clientInfo *client = malloc(sizeof(struct clientInfo));
+        socklen_t addrlen = sizeof(client->clientAddr);
 
         client->clientFD = accept(sockFD,
                                   (struct sockaddr *)&client->clientAddr,
-                                  &len);
+                                  &addrlen);
+
         if (client->clientFD < 0) {
             free(client);
+            if (errno == EINTR) break;
             continue;
         }
+
+        syslog(LOG_INFO, "Accepted connection from %s",
+               inet_ntoa(client->clientAddr.sin_addr));
 
         pthread_t tid;
         pthread_create(&tid, NULL, processClientData, client);
