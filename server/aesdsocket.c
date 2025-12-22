@@ -97,7 +97,7 @@ int main( int argc, char *argv[] ) {
     }
 
     // ensure old data file is removed
-    remove( "/var/tmp/aesdsocketdata.txt" );
+    remove( "/var/tmp/aesdsocketdata" );
 
     int clientFD;
     struct clientInfo* clientInfo;
@@ -171,7 +171,7 @@ void processClientData( struct clientInfo* clientInfo )
     char buffer[1024];
     char *ptr = buffer;
     char *packet_buffer = malloc(MAX_PACKET_SIZE);
-    int fd = open("/var/tmp/aesdsocketdata.txt" , O_CREAT | O_RDWR  , S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH);
+    int fd = open("/var/tmp/aesdsocketdata" , O_CREAT | O_RDWR  , S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH,  0666);
 
     if(fd < 0){
         perror("Error opening file");
