@@ -1,10 +1,5 @@
 #include "systemcalls.h"
-#include <stdio.h>
-#include <unistd.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <stdlib.h>
-#include <fcntl.h>
+
 /**
  * @param cmd the command to execute with system()
  * @return true if the command in @param cmd was executed
@@ -21,9 +16,8 @@ bool do_system(const char *cmd)
  *   and return a boolean true if the system() call completed with success
  *   or false() if it returned a failure
 */
-    bool status = (system( cmd ) == 0 )? true:  false;
 
-    return status;
+    return true;
 }
 
 /**
@@ -64,29 +58,10 @@ bool do_exec(int count, ...)
  *   as second argument to the execv() command.
  *
 */
-    bool status = true;
-    fflush(stdout);
-    int PID = fork();
-
-    if(PID == 0)
-    {
-        // child
-
-        execv(command[0], command);
-        status = false;
-        perror("execv");
-        _exit(1);
-    }
-    else
-    {
-        int child_status;
-        waitpid(PID, &child_status, 0);
-        status = WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0;
-    }
 
     va_end(args);
 
-    return status;
+    return true;
 }
 
 /**
@@ -117,28 +92,6 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
  *   The rest of the behaviour is same as do_exec()
  *
 */
-
-    
-
-
-    // Open the output file in write mode
-    int fd = open(outputfile, O_WRONLY | O_CREAT, 0644);
-    if (fd == -1) {
-        perror("open");
-        exit(1);
-    }
-
-    // Duplicate the file descriptor to redirect standard output
-    if (dup2(fd, STDOUT_FILENO) == -1) {
-        perror("dup2");
-        exit(1);
-    }
-
-    // Close the original file descriptor
-    close(fd);
-
-    // Call execv
-    execv(command[0], command);
 
     va_end(args);
 
