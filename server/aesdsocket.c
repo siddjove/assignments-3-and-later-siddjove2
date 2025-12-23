@@ -10,12 +10,16 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <time.h>
 
 #define PORT 9000
 #define DATA_FILE "/var/tmp/aesdsocketdata"
 #define MAX_PACKET_SIZE 1024
 
 static volatile sig_atomic_t keepRunning = 1;
+
+pthread_mutex_t file_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_t timer_thread;
 
 struct clientInfo {
     int clientFD;
@@ -28,21 +32,54 @@ void signal_handler(int signo)
     keepRunning = 0;
 }
 
+/* ================= TIMESTAMP THREAD ================= */
+void *timestamp_thread_func(void *arg)
+{
+    (void)arg;
+
+    while (keepRunning) {
+        sleep(10);
+
+        if (!keepRunning)
+            break;
+
+        time_t now = time(NULL);
+        struct tm *tm_info = localtime(&now);
+
+        char timestamp[128];
+        strftime(timestamp, sizeof(timestamp),
+                 "timestamp:%a, %d %b %Y %H:%M:%S %z\n",
+                 tm_info);
+
+        pthread_mutex_lock(&file_mutex);
+
+        int fd = open(DATA_FILE, O_CREAT | O_WRONLY | O_APPEND, 0644);
+        if (fd >= 0) {
+            write(fd, timestamp, strlen(timestamp));
+            close(fd);
+        }
+
+        pthread_mutex_unlock(&file_mutex);
+    }
+    return NULL;
+}
+
+/* ================= CLIENT THREAD ================= */
 void *processClientData(void *arg)
 {
     struct clientInfo *client = (struct clientInfo *)arg;
     char buffer[MAX_PACKET_SIZE];
     ssize_t bytes;
 
-    int fd = open(DATA_FILE, O_CREAT | O_RDWR | O_APPEND, 0644);
-    if (fd < 0) {
-        syslog(LOG_ERR, "File open failed");
-        close(client->clientFD);
-        free(client);
-        return NULL;
-    }
-
     while ((bytes = recv(client->clientFD, buffer, sizeof(buffer), 0)) > 0) {
+
+        pthread_mutex_lock(&file_mutex);
+
+        int fd = open(DATA_FILE, O_CREAT | O_RDWR | O_APPEND, 0644);
+        if (fd < 0) {
+            pthread_mutex_unlock(&file_mutex);
+            break;
+        }
 
         write(fd, buffer, bytes);
 
@@ -55,17 +92,20 @@ void *processClientData(void *arg)
                 send(client->clientFD, sendbuf, read_bytes, 0);
             }
         }
+
+        close(fd);
+        pthread_mutex_unlock(&file_mutex);
     }
 
     syslog(LOG_INFO, "Closed connection from %s",
            inet_ntoa(client->clientAddr.sin_addr));
 
-    close(fd);
     close(client->clientFD);
     free(client);
     return NULL;
 }
 
+/* ================= MAIN ================= */
 int main(int argc, char *argv[])
 {
     int daemonize = 0;
@@ -126,17 +166,23 @@ int main(int argc, char *argv[])
 
     remove(DATA_FILE);
 
+    /* Start timestamp thread */
+    pthread_create(&timer_thread, NULL, timestamp_thread_func, NULL);
+
     while (keepRunning) {
         struct clientInfo *client = malloc(sizeof(struct clientInfo));
-        socklen_t addrlen = sizeof(client->clientAddr);
+        if (!client)
+            continue;
 
+        socklen_t addrlen = sizeof(client->clientAddr);
         client->clientFD = accept(sockFD,
                                   (struct sockaddr *)&client->clientAddr,
                                   &addrlen);
 
         if (client->clientFD < 0) {
             free(client);
-            if (errno == EINTR) break;
+            if (errno == EINTR)
+                break;
             continue;
         }
 
@@ -145,8 +191,11 @@ int main(int argc, char *argv[])
 
         pthread_t tid;
         pthread_create(&tid, NULL, processClientData, client);
-        pthread_detach(tid);
+        pthread_join(tid, NULL);
     }
+
+    keepRunning = 0;
+    pthread_join(timer_thread, NULL);
 
     close(sockFD);
     remove(DATA_FILE);
