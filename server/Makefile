@@ -1,33 +1,17 @@
-# Define compiler and flags
-CC = gcc
+# Use compiler provided by build system (Yocto/Buildroot)
+CC ?= gcc
 
-# Default target
-TARGET = aesdsocket 
+CFLAGS ?= -Wall -Werror -pthread
+LDFLAGS ?=
 
-# Object files
-OBJS = aesdsocket.o
+TARGET = aesdsocket
+SRC = aesdsocket.c
 
-# Compiler flags
-CFLAGS = -Wall -Werror
-
-# Cross-compilation support
-ifeq ($(CROSS_COMPILE),)
-        # Native build
-		PREFIX =
-else
-        # Cross-compilation
-		PREFIX = $(CROSS_COMPILE)
-		CC = $(PREFIX)gcc
-endif
-
-# Default target
 all: $(TARGET)
 
-$(TARGET): $(OBJS)
-		$(CC) $(CFLAGS) $(INCLUDES) -o $@ $^
-%.o: %.c
-		$(CC) -c $< -o $@
+$(TARGET): $(SRC)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $(TARGET) $(SRC)
 
-# Clean target
 clean:
-		rm -f $(TARGET) $(OBJS)
+	rm -f $(TARGET)
+
