@@ -1,11 +1,7 @@
-# Use compiler provided by build system (Yocto/Buildroot)
-CC ?= gcc
-
-CFLAGS ?= -Wall -Werror -pthread
-LDFLAGS ?=
-
 TARGET = aesdsocket
 SRC = aesdsocket.c
+
+CFLAGS += -Wall -Werror -pthread
 
 all: $(TARGET)
 
