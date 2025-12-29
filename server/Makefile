@@ -1,11 +1,11 @@
 TARGET = aesdsocket
 SRC = aesdsocket.c
 
-CFLAGS += -Wall -Werror -pthread
+CC ?= $(CC)
+CFLAGS ?= -Wall -Werror -pthread
+LDFLAGS ?= -pthread
 
-all: $(TARGET)
-
-$(TARGET): $(SRC)
+all:
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $(TARGET) $(SRC)
 
 clean:
